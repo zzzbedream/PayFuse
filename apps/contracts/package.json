@@ -1,0 +1,28 @@
+{
+  "name": "@payfuse/contracts",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:coverage": "hardhat coverage",
+    "deploy:spark": "hardhat run scripts/deploy.ts --network fuseSpark",
+    "deploy:fuse": "hardhat run scripts/deploy.ts --network fuse",
+    "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
+    "verify:spark": "hardhat run scripts/verify.ts --network fuseSpark",
+    "verify:fuse": "hardhat run scripts/verify.ts --network fuse",
+    "node": "hardhat node",
+    "clean": "hardhat clean",
+    "build": "hardhat compile"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@nomicfoundation/hardhat-verify": "^2.0.0",
+    "@openzeppelin/contracts": "5.0.2",
+    "dotenv": "^16.4.5",
+    "hardhat": "^2.22.5",
+    "typescript": "^5.5.0",
+    "ts-node": "^10.9.2",
+    "@types/node": "^20.14.0"
+  }
+}
