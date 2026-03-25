@@ -1,0 +1,146 @@
+// Prisma Schema for PayFuse
+// Database: Supabase PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL") // For migrations
+}
+
+// ─────────────────────────────────────────────────────────
+// MERCHANT - Business owner account
+// ─────────────────────────────────────────────────────────
+model Merchant {
+  id                 String    @id @default(cuid())
+  email              String    @unique
+  password           String    // bcrypt hashed
+  businessName       String    @map("business_name")
+  rut                String?   @unique
+  rutVerified        Boolean   @default(false) @map("rut_verified")
+
+  // Wallet (non-custodial - only public address stored)
+  walletAddress      String    @unique @map("wallet_address")
+  walletConnectedAt  DateTime? @map("wallet_connected_at")
+  walletSignature    String?   @map("wallet_signature")
+  smartWalletAddress String?   @map("smart_wallet_address")
+
+  // Buda integration
+  budaDepositAddress String?   @map("buda_deposit_address")
+  budaConnectedAt    DateTime? @map("buda_connected_at")
+
+  // Settings
+  webhookUrl         String?   @map("webhook_url")
+  isActive           Boolean   @default(true) @map("is_active")
+
+  // Timestamps
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  payments           Payment[]
+  conversions        Conversion[]
+
+  @@map("merchants")
+}
+
+// ─────────────────────────────────────────────────────────
+// PAYMENT - Individual payment/order
+// ─────────────────────────────────────────────────────────
+model Payment {
+  id              String        @id @default(cuid())
+  merchantId      String        @map("merchant_id")
+  merchant        Merchant      @relation(fields: [merchantId], references: [id])
+
+  // On-chain data
+  onChainOrderId  String?       @unique @map("on_chain_order_id")
+  amount          String        // Decimal as string for precision
+  amountRaw       String        @map("amount_raw") // Wei/smallest unit
+  tokenAddress    String        @map("token_address")
+  tokenSymbol     String        @map("token_symbol")
+  merchantWallet  String        @map("merchant_wallet")
+  customerWallet  String?       @map("customer_wallet")
+  txHash          String?       @map("tx_hash")
+  fee             String?       // PayFuse fee (0.5%)
+
+  // Status
+  status          PaymentStatus @default(PENDING)
+
+  // QR and display
+  qrData          String        @map("qr_data")
+  qrImage         String?       @map("qr_image")
+
+  // Timing
+  expiresAt       DateTime      @map("expires_at")
+  paidAt          DateTime?     @map("paid_at")
+
+  // Blockchain
+  blockNumber     Int?          @map("block_number")
+  gasSponsored    Boolean       @default(false) @map("gas_sponsored")
+
+  // Timestamps
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  @@index([merchantId, status])
+  @@index([onChainOrderId])
+  @@index([createdAt(sort: Desc)])
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  CANCELLED
+  EXPIRED
+  FAILED
+}
+
+// ─────────────────────────────────────────────────────────
+// CONVERSION - USDC to CLP via Buda
+// ─────────────────────────────────────────────────────────
+model Conversion {
+  id               String           @id @default(cuid())
+  merchantId       String           @map("merchant_id")
+  merchant         Merchant         @relation(fields: [merchantId], references: [id])
+
+  // Amounts
+  sourceAmount     String           @map("source_amount")
+  sourceCurrency   String           @default("USDC") @map("source_currency")
+  targetAmount     String?          @map("target_amount")
+  targetCurrency   String           @default("CLP") @map("target_currency")
+  exchangeRate     String?          @map("exchange_rate")
+
+  // Buda tracking
+  budaOrderId      String?          @map("buda_order_id")
+  budaWithdrawalId String?          @map("buda_withdrawal_id")
+
+  // Fees
+  referralFee      String?          @map("referral_fee")
+  payfuseFee       String?          @map("payfuse_fee")
+  txHash           String?          @map("tx_hash")
+
+  // Status
+  status           ConversionStatus @default(PENDING)
+  errorMessage     String?          @map("error_message")
+  completedAt      DateTime?        @map("completed_at")
+
+  // Timestamps
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  @@index([merchantId, status])
+  @@index([createdAt(sort: Desc)])
+  @@map("conversions")
+}
+
+enum ConversionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}

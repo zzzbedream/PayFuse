@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { config } from './config';
-import { connectDatabase } from './config/database';
+import { connectDatabase, disconnectDatabase } from './lib/prisma';
 import { errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/auth';
 import paymentRoutes from './routes/payments';
@@ -111,12 +111,14 @@ async function start(): Promise<void> {
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received — shutting down…');
   await webhookService.stop();
+  await disconnectDatabase();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   console.log('SIGINT received — shutting down…');
   await webhookService.stop();
+  await disconnectDatabase();
   process.exit(0);
 });
 

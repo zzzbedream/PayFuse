@@ -12,9 +12,9 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
-import { Merchant } from '../models/Merchant';
-import { Conversion } from '../models/Conversion';
+import { prisma } from '../lib/prisma';
 import { budaService } from '../services/buda';
+import { ConversionStatus } from '@prisma/client';
 
 const router = Router();
 
@@ -39,7 +39,10 @@ const quoteSchema = z.object({
  */
 router.get('/me/buda', async (req: AuthRequest, res: Response) => {
   try {
-    const merchant = await Merchant.findById(req.merchantId);
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: req.merchantId },
+    });
+
     if (!merchant) {
       throw new AppError('Merchant not found', 404);
     }
@@ -50,7 +53,7 @@ router.get('/me/buda', async (req: AuthRequest, res: Response) => {
         isConfigured: Boolean(merchant.budaDepositAddress),
         budaDepositAddress: merchant.budaDepositAddress || null,
         budaConnectedAt: merchant.budaConnectedAt || null,
-        affiliateLink: budaService.generateAffiliateLink(merchant._id.toString()),
+        affiliateLink: budaService.generateAffiliateLink(merchant.id),
         serviceEnabled: budaService.isEnabled(),
       },
     });
@@ -72,18 +75,13 @@ router.patch('/me/buda', async (req: AuthRequest, res: Response) => {
   try {
     const { budaDepositAddress } = updateBudaSchema.parse(req.body);
 
-    const merchant = await Merchant.findByIdAndUpdate(
-      req.merchantId,
-      {
+    const merchant = await prisma.merchant.update({
+      where: { id: req.merchantId },
+      data: {
         budaDepositAddress,
         budaConnectedAt: new Date(),
       },
-      { new: true }
-    );
-
-    if (!merchant) {
-      throw new AppError('Merchant not found', 404);
-    }
+    });
 
     res.json({
       status: 'success',
@@ -148,12 +146,15 @@ router.get('/me/buda/conversions', async (req: AuthRequest, res: Response) => {
     const skip = (page - 1) * limit;
 
     const [conversions, total] = await Promise.all([
-      Conversion.find({ merchantId: req.merchantId })
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Conversion.countDocuments({ merchantId: req.merchantId }),
+      prisma.conversion.findMany({
+        where: { merchantId: req.merchantId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.conversion.count({
+        where: { merchantId: req.merchantId },
+      }),
     ]);
 
     res.json({
@@ -180,12 +181,15 @@ router.get('/me/buda/conversions', async (req: AuthRequest, res: Response) => {
  */
 router.get('/me/buda/affiliate', async (req: AuthRequest, res: Response) => {
   try {
-    const merchant = await Merchant.findById(req.merchantId);
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: req.merchantId },
+    });
+
     if (!merchant) {
       throw new AppError('Merchant not found', 404);
     }
 
-    const affiliateLink = budaService.generateAffiliateLink(merchant._id.toString());
+    const affiliateLink = budaService.generateAffiliateLink(merchant.id);
 
     res.json({
       status: 'success',
@@ -213,38 +217,38 @@ router.get('/me/buda/affiliate', async (req: AuthRequest, res: Response) => {
  */
 router.get('/me/buda/stats', async (req: AuthRequest, res: Response) => {
   try {
-    const stats = await Conversion.aggregate([
-      { $match: { merchantId: req.merchantId } },
-      {
-        $group: {
-          _id: null,
-          totalConversions: { $sum: 1 },
-          totalSourceAmount: { $sum: { $toDouble: '$sourceAmount' } },
-          totalTargetAmount: { $sum: { $toDouble: '$targetAmount' } },
-          totalReferralFees: { $sum: { $toDouble: { $ifNull: ['$referralFee', '0'] } } },
-          completedCount: {
-            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] },
-          },
-        },
-      },
-    ]);
+    const conversions = await prisma.conversion.findMany({
+      where: { merchantId: req.merchantId },
+    });
 
-    const result = stats[0] || {
-      totalConversions: 0,
-      totalSourceAmount: 0,
-      totalTargetAmount: 0,
-      totalReferralFees: 0,
-      completedCount: 0,
-    };
+    const stats = conversions.reduce(
+      (acc, conv) => {
+        acc.totalConversions++;
+        acc.totalSourceAmount += parseFloat(conv.sourceAmount);
+        acc.totalTargetAmount += parseFloat(conv.targetAmount || '0');
+        acc.totalReferralFees += parseFloat(conv.referralFee || '0');
+        if (conv.status === ConversionStatus.COMPLETED) {
+          acc.completedCount++;
+        }
+        return acc;
+      },
+      {
+        totalConversions: 0,
+        totalSourceAmount: 0,
+        totalTargetAmount: 0,
+        totalReferralFees: 0,
+        completedCount: 0,
+      }
+    );
 
     res.json({
       status: 'success',
       data: {
-        totalConversions: result.totalConversions,
-        totalVolumeUSDC: result.totalSourceAmount.toFixed(2),
-        totalVolumeCLP: result.totalTargetAmount.toFixed(0),
-        estimatedReferralFees: result.totalReferralFees.toFixed(2),
-        completedConversions: result.completedCount,
+        totalConversions: stats.totalConversions,
+        totalVolumeUSDC: stats.totalSourceAmount.toFixed(2),
+        totalVolumeCLP: stats.totalTargetAmount.toFixed(0),
+        estimatedReferralFees: stats.totalReferralFees.toFixed(2),
+        completedConversions: stats.completedCount,
       },
     });
   } catch (error) {

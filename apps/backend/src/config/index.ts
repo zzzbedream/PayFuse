@@ -6,7 +6,11 @@ dotenv.config();
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().default('4000'),
-  MONGODB_URI: z.string().min(1),
+
+  // ── Database (Supabase PostgreSQL) ──────────────
+  DATABASE_URL: z.string().min(1),
+  DIRECT_URL: z.string().optional(), // For Prisma migrations
+
   JWT_SECRET: z.string().min(32),
   JWT_EXPIRES_IN: z.string().default('7d'),
   CORS_ORIGIN: z.string().default('http://localhost:3000'),

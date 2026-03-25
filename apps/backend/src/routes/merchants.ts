@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
-import { Merchant } from '../models/Merchant';
+import { prisma } from '../lib/prisma';
 import { blockchainService } from '../services/blockchain';
 import { siiService } from '../services/sii';
 import { fuseScanService } from '../services/fusescan';
@@ -14,13 +14,15 @@ const router = Router();
 
 router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const merchant = await Merchant.findById(req.merchantId);
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: req.merchantId },
+    });
     if (!merchant) throw new AppError('Merchant not found', 404);
 
     res.json({
       status: 'success',
       data: {
-        id: merchant._id,
+        id: merchant.id,
         email: merchant.email,
         businessName: merchant.businessName,
         rut: merchant.rut,
@@ -52,18 +54,15 @@ router.patch('/me', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const updates = updateProfileSchema.parse(req.body);
 
-    const merchant = await Merchant.findByIdAndUpdate(
-      req.merchantId,
-      { $set: updates },
-      { new: true, runValidators: true }
-    );
-
-    if (!merchant) throw new AppError('Merchant not found', 404);
+    const merchant = await prisma.merchant.update({
+      where: { id: req.merchantId },
+      data: updates,
+    });
 
     res.json({
       status: 'success',
       data: {
-        id: merchant._id,
+        id: merchant.id,
         email: merchant.email,
         businessName: merchant.businessName,
         webhookUrl: merchant.webhookUrl,
@@ -100,9 +99,12 @@ router.post('/me/verify-rut', authenticate, async (req: AuthRequest, res: Respon
     }
 
     // Save verified RUT to merchant profile
-    await Merchant.findByIdAndUpdate(req.merchantId, {
-      rut: result.formattedRut,
-      rutVerified: true,
+    await prisma.merchant.update({
+      where: { id: req.merchantId },
+      data: {
+        rut: result.formattedRut,
+        rutVerified: true,
+      },
     });
 
     res.json({
@@ -127,7 +129,9 @@ router.post('/me/verify-rut', authenticate, async (req: AuthRequest, res: Respon
 
 router.get('/me/wallet', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const merchant = await Merchant.findById(req.merchantId);
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: req.merchantId },
+    });
     if (!merchant) throw new AppError('Merchant not found', 404);
 
     const [nativeBalance, tokenBalance] = await Promise.all([
@@ -163,7 +167,9 @@ router.get('/me/wallet', authenticate, async (req: AuthRequest, res: Response) =
 
 router.get('/me/transactions', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const merchant = await Merchant.findById(req.merchantId);
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: req.merchantId },
+    });
     if (!merchant) throw new AppError('Merchant not found', 404);
 
     const page = parseInt(req.query.page as string, 10) || 1;

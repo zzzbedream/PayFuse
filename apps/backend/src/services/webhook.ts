@@ -1,8 +1,8 @@
 import { ethers } from 'ethers';
 import { config } from '../config';
 import { blockchainService } from './blockchain';
-import { Payment, PaymentStatus } from '../models/Payment';
-import { Merchant } from '../models/Merchant';
+import { prisma } from '../lib/prisma';
+import { PaymentStatus } from '@prisma/client';
 import axios from 'axios';
 
 // ── Types ───────────────────────────────────────────
@@ -124,29 +124,35 @@ export class WebhookService {
     data: OrderPaidEvent,
     event: ethers.EventLog
   ): Promise<void> {
-    const payment = await Payment.findOne({ onChainOrderId: data.orderId });
+    const payment = await prisma.payment.findUnique({
+      where: { onChainOrderId: data.orderId },
+    });
     if (!payment) {
       console.warn(`[Webhook] No local payment found for orderId: ${data.orderId}`);
       return;
     }
 
     // Update payment record
-    payment.status = PaymentStatus.PAID;
-    payment.customerWallet = data.payer;
-    payment.fee = data.fee.toString();
-    payment.txHash = event.transactionHash;
-    payment.blockNumber = event.blockNumber;
-    payment.paidAt = new Date();
-    await payment.save();
+    const updated = await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: PaymentStatus.PAID,
+        customerWallet: data.payer,
+        fee: data.fee.toString(),
+        txHash: event.transactionHash,
+        blockNumber: event.blockNumber,
+        paidAt: new Date(),
+      },
+    });
 
     console.log(
-      `[Webhook] Payment ${payment._id} marked as PAID (tx: ${event.transactionHash})`
+      `[Webhook] Payment ${updated.id} marked as PAID (tx: ${event.transactionHash})`
     );
 
     // Notify merchant via webhook if configured
-    await this.notifyMerchant(payment.merchantId.toString(), {
+    await this.notifyMerchant(payment.merchantId, {
       type: 'payment.paid',
-      paymentId: payment._id.toString(),
+      paymentId: payment.id,
       orderId: data.orderId,
       amount: payment.amount,
       tokenSymbol: payment.tokenSymbol,
@@ -156,29 +162,37 @@ export class WebhookService {
   }
 
   private async handleOrderCancelled(data: OrderCancelledEvent): Promise<void> {
-    const payment = await Payment.findOne({ onChainOrderId: data.orderId });
+    const payment = await prisma.payment.findUnique({
+      where: { onChainOrderId: data.orderId },
+    });
     if (!payment) return;
 
-    payment.status = PaymentStatus.CANCELLED;
-    await payment.save();
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: PaymentStatus.CANCELLED },
+    });
 
-    console.log(`[Webhook] Payment ${payment._id} marked as CANCELLED`);
+    console.log(`[Webhook] Payment ${payment.id} marked as CANCELLED`);
 
-    await this.notifyMerchant(payment.merchantId.toString(), {
+    await this.notifyMerchant(payment.merchantId, {
       type: 'payment.cancelled',
-      paymentId: payment._id.toString(),
+      paymentId: payment.id,
       orderId: data.orderId,
     });
   }
 
   private async handleOrderExpired(orderId: string): Promise<void> {
-    const payment = await Payment.findOne({ onChainOrderId: orderId });
+    const payment = await prisma.payment.findUnique({
+      where: { onChainOrderId: orderId },
+    });
     if (!payment) return;
 
-    payment.status = PaymentStatus.EXPIRED;
-    await payment.save();
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: PaymentStatus.EXPIRED },
+    });
 
-    console.log(`[Webhook] Payment ${payment._id} marked as EXPIRED`);
+    console.log(`[Webhook] Payment ${payment.id} marked as EXPIRED`);
   }
 
   // ── Merchant Notification ─────────────────────────
@@ -188,7 +202,9 @@ export class WebhookService {
     payload: Record<string, unknown>
   ): Promise<void> {
     try {
-      const merchant = await Merchant.findById(merchantId);
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: merchantId },
+      });
       if (!merchant?.webhookUrl) return;
 
       await axios.post(merchant.webhookUrl, {
@@ -247,15 +263,23 @@ export class WebhookService {
     for (const event of paidEvents) {
       if (!('args' in event)) continue;
       const args = event.args;
-      const existing = await Payment.findOne({ onChainOrderId: args.orderId });
+
+      const existing = await prisma.payment.findUnique({
+        where: { onChainOrderId: args.orderId },
+      });
+
       if (existing && existing.status === PaymentStatus.PENDING) {
-        existing.status = PaymentStatus.PAID;
-        existing.customerWallet = args.payer;
-        existing.fee = args.fee.toString();
-        existing.txHash = event.transactionHash;
-        existing.blockNumber = event.blockNumber;
-        existing.paidAt = new Date();
-        await existing.save();
+        await prisma.payment.update({
+          where: { id: existing.id },
+          data: {
+            status: PaymentStatus.PAID,
+            customerWallet: args.payer,
+            fee: args.fee.toString(),
+            txHash: event.transactionHash,
+            blockNumber: event.blockNumber,
+            paidAt: new Date(),
+          },
+        });
         processed++;
       }
     }

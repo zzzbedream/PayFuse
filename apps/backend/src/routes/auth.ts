@@ -1,22 +1,17 @@
 import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { ethers } from 'ethers';
-import { Merchant } from '../models/Merchant';
+import { prisma } from '../lib/prisma';
 import { config } from '../config';
 import { AppError } from '../middleware/errorHandler';
 import { authenticate, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
-// Legacy register schema (for backwards compatibility during migration)
-const registerSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-  businessName: z.string().min(2),
-});
+// ── Schemas ─────────────────────────────────────────
 
-// New non-custodial register schema
 const registerWithWalletSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
@@ -31,7 +26,8 @@ const loginSchema = z.object({
   password: z.string(),
 });
 
-// Verify that a signature was created by the claimed address
+// ── Helpers ─────────────────────────────────────────
+
 function verifySignature(message: string, signature: string, expectedAddress: string): boolean {
   try {
     const recoveredAddress = ethers.verifyMessage(message, signature);
@@ -41,7 +37,20 @@ function verifySignature(message: string, signature: string, expectedAddress: st
   }
 }
 
-// ── NEW: Non-custodial registration with connected wallet ──
+async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, 12);
+}
+
+async function comparePassword(password: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(password, hash);
+}
+
+// ── Routes ──────────────────────────────────────────
+
+/**
+ * POST /api/auth/register-wallet
+ * Non-custodial registration with wallet signature verification
+ */
 router.post('/register-wallet', async (req: Request, res: Response) => {
   try {
     const { email, password, businessName, walletAddress, signature, message } =
@@ -53,31 +62,34 @@ router.post('/register-wallet', async (req: Request, res: Response) => {
     }
 
     // Check if email already registered
-    const existingEmail = await Merchant.findOne({ email });
+    const existingEmail = await prisma.merchant.findUnique({ where: { email } });
     if (existingEmail) {
       throw new AppError('Email already registered', 409);
     }
 
     // Check if wallet already registered
-    const existingWallet = await Merchant.findOne({ walletAddress: walletAddress.toLowerCase() });
+    const existingWallet = await prisma.merchant.findUnique({
+      where: { walletAddress: walletAddress.toLowerCase() },
+    });
     if (existingWallet) {
       throw new AppError('Wallet already registered', 409);
     }
 
-    const merchant = new Merchant({
-      email,
-      password,
-      businessName,
-      walletAddress: walletAddress.toLowerCase(),
-      walletConnectedAt: new Date(),
-      walletSignature: signature,
-      // NO walletPrivateKey - this is non-custodial!
+    // Create merchant
+    const hashedPassword = await hashPassword(password);
+    const merchant = await prisma.merchant.create({
+      data: {
+        email,
+        password: hashedPassword,
+        businessName,
+        walletAddress: walletAddress.toLowerCase(),
+        walletConnectedAt: new Date(),
+        walletSignature: signature,
+      },
     });
 
-    await merchant.save();
-
-    const token = jwt.sign({ merchantId: merchant._id }, config.JWT_SECRET, {
-      expiresIn: config.JWT_EXPIRES_IN as unknown as number,
+    const token = jwt.sign({ merchantId: merchant.id }, config.JWT_SECRET, {
+      expiresIn: config.JWT_EXPIRES_IN,
     });
 
     res.status(201).json({
@@ -85,7 +97,7 @@ router.post('/register-wallet', async (req: Request, res: Response) => {
       data: {
         token,
         merchant: {
-          id: merchant._id,
+          id: merchant.id,
           email: merchant.email,
           businessName: merchant.businessName,
           walletAddress: merchant.walletAddress,
@@ -106,33 +118,36 @@ router.post('/register-wallet', async (req: Request, res: Response) => {
   }
 });
 
-// ── DEPRECATED: Legacy registration (will be removed) ──
-// This endpoint is kept temporarily for migration but should NOT be used
+/**
+ * POST /api/auth/register
+ * Legacy registration (deprecated - kept for migration)
+ */
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { email, password, businessName } = registerSchema.parse(req.body);
+    const { email, password, businessName } = registerWithWalletSchema
+      .pick({ email: true, password: true, businessName: true })
+      .parse(req.body);
 
-    const existing = await Merchant.findOne({ email });
+    const existing = await prisma.merchant.findUnique({ where: { email } });
     if (existing) {
       throw new AppError('Email already registered', 409);
     }
 
-    // DEPRECATED: For backwards compatibility, generate a placeholder address
-    // New users should use /register-wallet endpoint
+    // Generate placeholder wallet (user must connect real wallet later)
     const tempWallet = ethers.Wallet.createRandom();
+    const hashedPassword = await hashPassword(password);
 
-    const merchant = new Merchant({
-      email,
-      password,
-      businessName,
-      walletAddress: tempWallet.address,
-      // NOTE: Private key is NOT stored - user must connect wallet to operate
+    const merchant = await prisma.merchant.create({
+      data: {
+        email,
+        password: hashedPassword,
+        businessName,
+        walletAddress: tempWallet.address.toLowerCase(),
+      },
     });
 
-    await merchant.save();
-
-    const token = jwt.sign({ merchantId: merchant._id }, config.JWT_SECRET, {
-      expiresIn: config.JWT_EXPIRES_IN as unknown as number,
+    const token = jwt.sign({ merchantId: merchant.id }, config.JWT_SECRET, {
+      expiresIn: config.JWT_EXPIRES_IN,
     });
 
     res.status(201).json({
@@ -140,11 +155,10 @@ router.post('/register', async (req: Request, res: Response) => {
       data: {
         token,
         merchant: {
-          id: merchant._id,
+          id: merchant.id,
           email: merchant.email,
           businessName: merchant.businessName,
           walletAddress: merchant.walletAddress,
-          // Flag to indicate wallet needs to be connected
           walletPending: true,
         },
       },
@@ -162,22 +176,26 @@ router.post('/register', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/auth/login
+ * Login with email and password
+ */
 router.post('/login', async (req: Request, res: Response) => {
   try {
     const { email, password } = loginSchema.parse(req.body);
 
-    const merchant = await Merchant.findOne({ email }).select('+password');
+    const merchant = await prisma.merchant.findUnique({ where: { email } });
     if (!merchant) {
       throw new AppError('Invalid credentials', 401);
     }
 
-    const isMatch = await merchant.comparePassword(password);
+    const isMatch = await comparePassword(password, merchant.password);
     if (!isMatch) {
       throw new AppError('Invalid credentials', 401);
     }
 
-    const token = jwt.sign({ merchantId: merchant._id }, config.JWT_SECRET, {
-      expiresIn: config.JWT_EXPIRES_IN as unknown as number,
+    const token = jwt.sign({ merchantId: merchant.id }, config.JWT_SECRET, {
+      expiresIn: config.JWT_EXPIRES_IN,
     });
 
     res.json({
@@ -185,7 +203,7 @@ router.post('/login', async (req: Request, res: Response) => {
       data: {
         token,
         merchant: {
-          id: merchant._id,
+          id: merchant.id,
           email: merchant.email,
           businessName: merchant.businessName,
           walletAddress: merchant.walletAddress,
@@ -205,23 +223,34 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/auth/me
+ * Get current merchant profile
+ */
 router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const merchant = await Merchant.findById(req.merchantId);
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: req.merchantId },
+      select: {
+        id: true,
+        email: true,
+        businessName: true,
+        walletAddress: true,
+        smartWalletAddress: true,
+        rut: true,
+        rutVerified: true,
+        isActive: true,
+        createdAt: true,
+      },
+    });
+
     if (!merchant) {
       throw new AppError('Merchant not found', 404);
     }
 
     res.json({
       status: 'success',
-      data: {
-        id: merchant._id,
-        email: merchant.email,
-        businessName: merchant.businessName,
-        walletAddress: merchant.walletAddress,
-        isActive: merchant.isActive,
-        createdAt: merchant.createdAt,
-      },
+      data: merchant,
     });
   } catch (error) {
     if (error instanceof AppError) {

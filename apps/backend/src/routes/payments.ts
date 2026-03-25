@@ -2,8 +2,8 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { ethers } from 'ethers';
 import QRCode from 'qrcode';
-import { Payment, PaymentStatus } from '../models/Payment';
-import { Merchant } from '../models/Merchant';
+import { prisma } from '../lib/prisma';
+import { PaymentStatus } from '@prisma/client';
 import { blockchainService } from '../services/blockchain';
 import { relayerService } from '../services/relayer';
 import { fuseScanService } from '../services/fusescan';
@@ -24,7 +24,9 @@ router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { amount, tokenAddress } = createPaymentSchema.parse(req.body);
 
-    const merchant = await Merchant.findById(req.merchantId);
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: req.merchantId },
+    });
     if (!merchant) throw new AppError('Merchant not found', 404);
 
     // Get token info for display and raw conversion
@@ -51,26 +53,27 @@ router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
     const qrImage = await QRCode.toDataURL(qrData);
 
     // Persist in DB
-    const payment = new Payment({
-      merchantId: merchant._id,
-      onChainOrderId: orderId,
-      amount,
-      amountRaw: amountRaw.toString(),
-      tokenAddress,
-      tokenSymbol: tokenInfo.symbol,
-      merchantWallet: merchant.walletAddress,
-      status: PaymentStatus.PENDING,
-      qrData,
-      qrImage,
-      expiresAt,
-      gasSponsored: true,
+    const payment = await prisma.payment.create({
+      data: {
+        merchantId: merchant.id,
+        onChainOrderId: orderId,
+        amount,
+        amountRaw: amountRaw.toString(),
+        tokenAddress,
+        tokenSymbol: tokenInfo.symbol,
+        merchantWallet: merchant.walletAddress,
+        status: PaymentStatus.PENDING,
+        qrData,
+        qrImage,
+        expiresAt,
+        gasSponsored: true,
+      },
     });
-    await payment.save();
 
     res.status(201).json({
       status: 'success',
       data: {
-        paymentId: payment._id,
+        paymentId: payment.id,
         orderId,
         amount,
         tokenSymbol: tokenInfo.symbol,
@@ -103,18 +106,24 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { status, page = '1', limit = '20' } = req.query;
 
-    const query: Record<string, unknown> = { merchantId: req.merchantId };
-    if (status) query.status = status;
-
     const pageNum = parseInt(page as string, 10);
     const limitNum = Math.min(parseInt(limit as string, 10), 100);
 
+    const where: { merchantId: string; status?: PaymentStatus } = {
+      merchantId: req.merchantId!,
+    };
+    if (status) {
+      where.status = status as PaymentStatus;
+    }
+
     const [payments, total] = await Promise.all([
-      Payment.find(query)
-        .sort({ createdAt: -1 })
-        .skip((pageNum - 1) * limitNum)
-        .limit(limitNum),
-      Payment.countDocuments(query),
+      prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (pageNum - 1) * limitNum,
+        take: limitNum,
+      }),
+      prisma.payment.count({ where }),
     ]);
 
     res.json({
@@ -138,9 +147,11 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
 
 router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const payment = await Payment.findOne({
-      _id: req.params.id,
-      merchantId: req.merchantId,
+    let payment = await prisma.payment.findFirst({
+      where: {
+        id: req.params.id,
+        merchantId: req.merchantId,
+      },
     });
 
     if (!payment) throw new AppError('Payment not found', 404);
@@ -150,17 +161,25 @@ router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
       try {
         const onChain = await blockchainService.getOrderDetails(payment.onChainOrderId);
         if (onChain.status === 1) {
-          payment.status = PaymentStatus.PAID;
-          payment.customerWallet = onChain.payer;
-          payment.fee = onChain.fee.toString();
-          payment.paidAt = new Date();
-          await payment.save();
+          payment = await prisma.payment.update({
+            where: { id: payment.id },
+            data: {
+              status: PaymentStatus.PAID,
+              customerWallet: onChain.payer,
+              fee: onChain.fee.toString(),
+              paidAt: new Date(),
+            },
+          });
         } else if (onChain.status === 2) {
-          payment.status = PaymentStatus.CANCELLED;
-          await payment.save();
+          payment = await prisma.payment.update({
+            where: { id: payment.id },
+            data: { status: PaymentStatus.CANCELLED },
+          });
         } else if (onChain.status === 3) {
-          payment.status = PaymentStatus.EXPIRED;
-          await payment.save();
+          payment = await prisma.payment.update({
+            where: { id: payment.id },
+            data: { status: PaymentStatus.EXPIRED },
+          });
         }
       } catch {
         // Chain query failed — return cached status
@@ -181,9 +200,11 @@ router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
 
 router.post('/:id/cancel', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const payment = await Payment.findOne({
-      _id: req.params.id,
-      merchantId: req.merchantId,
+    const payment = await prisma.payment.findFirst({
+      where: {
+        id: req.params.id,
+        merchantId: req.merchantId,
+      },
     });
 
     if (!payment) throw new AppError('Payment not found', 404);
@@ -201,10 +222,12 @@ router.post('/:id/cancel', authenticate, async (req: AuthRequest, res: Response)
       }
     }
 
-    payment.status = PaymentStatus.CANCELLED;
-    await payment.save();
+    const updated = await prisma.payment.update({
+      where: { id: payment.id },
+      data: { status: PaymentStatus.CANCELLED },
+    });
 
-    res.json({ status: 'success', data: payment });
+    res.json({ status: 'success', data: updated });
   } catch (error) {
     if (error instanceof AppError) {
       res.status(error.statusCode).json({ status: 'error', message: error.message });
@@ -230,7 +253,9 @@ router.post('/:id/relay', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = relaySchema.parse(req.body);
 
-    const payment = await Payment.findById(req.params.id);
+    const payment = await prisma.payment.findUnique({
+      where: { id: req.params.id },
+    });
     if (!payment) throw new AppError('Payment not found', 404);
     if (payment.status !== PaymentStatus.PENDING) {
       throw new AppError('Payment is not pending', 400);
@@ -252,17 +277,21 @@ router.post('/:id/relay', async (req: AuthRequest, res: Response) => {
     }
 
     // Mark as paid — webhook will also fire but this gives immediate response
-    payment.txHash = result.txHash;
-    payment.customerWallet = parsed.from;
-    payment.gasSponsored = true;
-    payment.status = PaymentStatus.PAID;
-    payment.paidAt = new Date();
-    await payment.save();
+    const updated = await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        txHash: result.txHash,
+        customerWallet: parsed.from,
+        gasSponsored: true,
+        status: PaymentStatus.PAID,
+        paidAt: new Date(),
+      },
+    });
 
     res.json({
       status: 'success',
       data: {
-        paymentId: payment._id,
+        paymentId: updated.id,
         txHash: result.txHash,
         gasUsed: result.gasUsed,
         gasCostFuse: result.gasCostFuse,
@@ -287,7 +316,9 @@ router.post('/:id/relay', async (req: AuthRequest, res: Response) => {
 
 router.get('/:id/status', async (req: AuthRequest, res: Response) => {
   try {
-    const payment = await Payment.findById(req.params.id);
+    const payment = await prisma.payment.findUnique({
+      where: { id: req.params.id },
+    });
     if (!payment) throw new AppError('Payment not found', 404);
 
     let onChainStatus: string | null = null;
@@ -309,7 +340,7 @@ router.get('/:id/status', async (req: AuthRequest, res: Response) => {
     res.json({
       status: 'success',
       data: {
-        paymentId: payment._id,
+        paymentId: payment.id,
         dbStatus: payment.status,
         onChainStatus,
         txStatus,
