@@ -34,6 +34,13 @@ const envSchema = z.object({
 
   // ── ERC-4337 EntryPoint ───────────────────────
   ENTRYPOINT_ADDRESS: z.string().default('0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789'),
+
+  // ── Buda.com Integration ──────────────────────
+  BUDA_API_URL: z.string().url().default('https://www.buda.com/api/v2'),
+  BUDA_API_KEY: z.string().default(''),
+  BUDA_API_SECRET: z.string().default(''),
+  BUDA_REFERRAL_CODE: z.string().default('PAYFUSE'),
+  BUDA_WEBHOOK_SECRET: z.string().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);

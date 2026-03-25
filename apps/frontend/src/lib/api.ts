@@ -98,6 +98,15 @@ export interface RegisterPayload {
   businessName: string;
 }
 
+export interface RegisterWithWalletPayload {
+  email: string;
+  password: string;
+  businessName: string;
+  walletAddress: string;
+  signature: string;
+  message: string;
+}
+
 export interface Merchant {
   id: string;
   email: string;
@@ -201,6 +210,19 @@ export const authApi = {
       return demoResponse({ status: 'success', data: { token: 'demo-jwt-token', merchant: DEMO_MERCHANT } });
     }
     return api.post('/auth/register', data);
+  },
+  registerWithWallet: (data: RegisterWithWalletPayload) => {
+    if (IS_DEMO) {
+      if (typeof window !== 'undefined') localStorage.setItem('payfuse_token', 'demo-jwt-token');
+      return demoResponse({
+        status: 'success',
+        data: {
+          token: 'demo-jwt-token',
+          merchant: { ...DEMO_MERCHANT, walletAddress: data.walletAddress }
+        }
+      });
+    }
+    return api.post('/auth/register-wallet', data);
   },
   me: () => {
     if (IS_DEMO) return demoResponse({ status: 'success', data: DEMO_MERCHANT });

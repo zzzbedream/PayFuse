@@ -8,9 +8,14 @@ export interface IMerchant extends Document {
   rut?: string;
   rutVerified: boolean;
   walletAddress: string;
-  walletPrivateKey?: string;
+  // walletPrivateKey: REMOVED - Non-custodial model (CMF compliance)
+  walletConnectedAt?: Date;
+  walletSignature?: string; // Signature used to verify wallet ownership
   smartWalletAddress?: string;
   webhookUrl?: string;
+  // Buda integration
+  budaDepositAddress?: string;
+  budaConnectedAt?: Date;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -51,7 +56,10 @@ const merchantSchema = new Schema<IMerchant>(
       required: true,
       unique: true,
     },
-    walletPrivateKey: {
+    walletConnectedAt: {
+      type: Date,
+    },
+    walletSignature: {
       type: String,
       select: false,
     },
@@ -61,6 +69,14 @@ const merchantSchema = new Schema<IMerchant>(
     },
     webhookUrl: {
       type: String,
+    },
+    // Buda integration fields
+    budaDepositAddress: {
+      type: String,
+      trim: true,
+    },
+    budaConnectedAt: {
+      type: Date,
     },
     isActive: {
       type: Boolean,

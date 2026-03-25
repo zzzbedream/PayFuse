@@ -9,9 +9,11 @@ import { errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/auth';
 import paymentRoutes from './routes/payments';
 import merchantRoutes from './routes/merchants';
+import budaRoutes from './routes/buda';
 import { webhookService } from './services/webhook';
 import { blockchainService } from './services/blockchain';
 import { relayerService } from './services/relayer';
+import { budaService } from './services/buda';
 
 const app = express();
 
@@ -55,6 +57,12 @@ app.get('/api/health', async (_req, res) => {
       balanceFuse: relayerStatus.balanceFuse,
       healthy: relayerStatus.isHealthy,
     },
+    integrations: {
+      buda: {
+        enabled: budaService.isEnabled(),
+        referralCode: config.BUDA_REFERRAL_CODE,
+      },
+    },
   });
 });
 
@@ -63,6 +71,7 @@ app.get('/api/health', async (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/merchants', merchantRoutes);
+app.use('/api/merchants', budaRoutes); // Buda integration routes (/me/buda/*)
 
 // ── Error Handler ───────────────────────────────────
 

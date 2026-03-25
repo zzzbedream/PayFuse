@@ -142,51 +142,48 @@ export class RelayerService {
   }
 
   /**
-   * Example: Build and sign a ForwardRequest on behalf of a user.
-   * This demonstrates how the backend can construct gasless payOrder calls.
+   * Build EIP-712 payload for frontend signing.
    *
-   * In production the USER signs the request client-side; this helper
-   * is useful for testing and for server-initiated gasless operations.
+   * The frontend should use this data to sign with the connected wallet,
+   * then submit the signed ForwardRequest to the relay() method.
+   *
+   * NON-CUSTODIAL: Private keys never leave the user's device.
    */
-  async buildPayOrderRequest(
-    userPrivateKey: string,
+  async buildPayOrderPayload(
+    userAddress: string,
     orderId: string
-  ): Promise<ForwardRequest> {
-    const provider = blockchainService.getProvider();
-    const userWallet = new ethers.Wallet(userPrivateKey, provider);
-
+  ): Promise<{
+    domain: ethers.TypedDataDomain;
+    types: Record<string, ethers.TypedDataField[]>;
+    value: {
+      from: string;
+      to: string;
+      value: bigint;
+      gas: bigint;
+      nonce: bigint;
+      deadline: number;
+      data: string;
+    };
+  }> {
     const pos = blockchainService.getPOSContract();
     const forwarder = blockchainService.getForwarderContract();
 
     const callData = pos.interface.encodeFunctionData('payOrder', [orderId]);
-    const nonce = await forwarder.nonces(userWallet.address);
+    const nonce = await forwarder.nonces(userAddress);
     const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour
 
-    const forwardData = {
-      from: userWallet.address,
-      to: config.PAYMENT_CONTRACT_ADDRESS,
-      value: 0n,
-      gas: 300_000n,
-      nonce,
-      deadline,
-      data: callData,
-    };
-
-    const domain = getForwarderDomain();
-    const signature = await userWallet.signTypedData(
-      domain,
-      FORWARD_REQUEST_TYPES,
-      forwardData
-    );
-
     return {
-      from: forwardData.from,
-      to: forwardData.to,
-      value: forwardData.value,
-      gas: forwardData.gas,
-      deadline: forwardData.deadline,
-      data: forwardData.data,
-      signature,
+      domain: getForwarderDomain(),
+      types: FORWARD_REQUEST_TYPES,
+      value: {
+        from: userAddress,
+        to: config.PAYMENT_CONTRACT_ADDRESS,
+        value: 0n,
+        gas: 300_000n,
+        nonce,
+        deadline,
+        data: callData,
+      },
     };
   }
 }
